@@ -29,6 +29,12 @@ class Settings(BaseSettings):
     nerve_threshold: int = 5
     happy_threshold: int = 500
 
+    # Stealth / anti-detection
+    timezone_offset_hours: int = -5  # Player's timezone offset from UTC (EST default)
+    stealth_enabled: bool = True
+    min_action_delay_seconds: float = 3.0
+    max_action_delay_seconds: float = 15.0
+
     # Safety
     dry_run: bool = True  # When True, log decisions but don't execute
     enable_attacks: bool = False

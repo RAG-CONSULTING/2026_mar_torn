@@ -1,8 +1,9 @@
-"""TORN API v2 async client with rate limiting."""
+"""TORN API v2 async client with rate limiting and request obfuscation."""
 
 from __future__ import annotations
 
 import asyncio
+import random
 import time
 from typing import Any
 
@@ -53,14 +54,31 @@ class TornAPI:
     user, faction, company, market, torn, property.
     """
 
+    # Common browser user-agents to rotate through
+    _USER_AGENTS = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 18_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Mobile/15E148 Safari/604.1",
+    ]
+
     def __init__(self, api_key: str, base_url: str = "https://api.torn.com/v2"):
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
         self._base_url_v1 = "https://api.torn.com"
         self._rate_limiter = RateLimiter()
+        # Pick a consistent UA per session (switching mid-session is suspicious)
+        self._user_agent = random.choice(self._USER_AGENTS)
         self._client = httpx.AsyncClient(
             timeout=30.0,
-            headers={"Authorization": f"ApiKey {api_key}"},
+            headers={
+                "Authorization": f"ApiKey {api_key}",
+                "User-Agent": self._user_agent,
+                "Accept": "application/json, text/plain, */*",
+                "Accept-Language": "en-US,en;q=0.9",
+            },
         )
 
     async def close(self) -> None:
@@ -77,6 +95,8 @@ class TornAPI:
     async def _get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         """Make a rate-limited GET request to the TORN API."""
         await self._rate_limiter.acquire()
+        # Micro-jitter: 100-900ms random delay to avoid metronomic requests
+        await asyncio.sleep(random.uniform(0.1, 0.9))
         url = f"{self._base_url}/{path.lstrip('/')}"
         logger.debug("torn_api_request", url=url, params=params)
         resp = await self._client.get(url, params=params)
