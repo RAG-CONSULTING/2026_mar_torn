@@ -10,7 +10,6 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
-import anthropic
 import structlog
 
 from torn_agent.api.client import TornAPI
@@ -198,7 +197,10 @@ class TornAgentBrain:
     def __init__(self, settings: Settings, torn_api: TornAPI):
         self.settings = settings
         self.api = torn_api
-        self.client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+        self.use_cli = settings.use_claude_cli
+        if not self.use_cli:
+            import anthropic
+            self.client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
         self.recommendations: list[ActionRecommendation] = []
         self.observations: list[Observation] = []
         self.history: list[dict[str, Any]] = []  # conversation turns for context
@@ -305,11 +307,78 @@ class TornAgentBrain:
     async def think(self, extra_context: str = "") -> list[ActionRecommendation]:
         """Run one thinking cycle.
 
-        Claude observes the game state via tools, reasons about strategy,
-        and returns a list of recommended actions sorted by priority.
+        Two modes:
+        - CLI mode (use_claude_cli=True): Gathers all game state first, then sends
+          a single prompt to `claude` CLI. Uses your Max subscription, zero API cost.
+        - API mode (use_claude_cli=False): Multi-turn tool-use loop via Anthropic SDK.
+          Requires ANTHROPIC_API_KEY and uses API credits.
         """
         self.recommendations = []
 
+        if self.use_cli:
+            return await self._think_cli(extra_context)
+        return await self._think_api(extra_context)
+
+    async def _think_cli(self, extra_context: str = "") -> list[ActionRecommendation]:
+        """Think using the Claude CLI backend (Max subscription)."""
+        from torn_agent.agent.cli_backend import (
+            gather_game_state,
+            build_analysis_prompt,
+            invoke_claude_cli,
+            parse_recommendations,
+        )
+
+        # Step 1: Gather all game state from TORN API
+        logger.info("cli_gathering_state")
+        game_state = await gather_game_state(self.api)
+
+        # Step 2: Build prompt with full game state
+        recent_obs = [
+            f"[{o.importance}] {o.category}: {o.observation}"
+            for o in self.observations[-10:]
+        ]
+        prompt = build_analysis_prompt(
+            system_prompt=self._build_system_prompt(),
+            game_state=game_state,
+            extra_context=extra_context,
+            recent_observations=recent_obs if recent_obs else None,
+        )
+
+        # Step 3: Send to Claude CLI
+        logger.info("cli_invoking_claude")
+        response_text = await invoke_claude_cli(prompt)
+
+        if response_text:
+            logger.info("agent_summary", summary=response_text[:500])
+
+        # Step 4: Parse recommendations from response
+        raw_recs = parse_recommendations(response_text)
+        for rec_data in raw_recs:
+            rec = ActionRecommendation(
+                action=rec_data["action"],
+                reasoning=rec_data.get("reasoning", ""),
+                priority=rec_data.get("priority", 5),
+                parameters=rec_data.get("parameters"),
+                wait_seconds=rec_data.get("wait_seconds"),
+            )
+            self.recommendations.append(rec)
+            logger.info(
+                "action_recommended",
+                action=rec.action,
+                priority=rec.priority,
+                reasoning=rec.reasoning,
+            )
+
+        # Save summary for history
+        self.history.append({"role": "assistant", "content": response_text})
+        if len(self.history) > 20:
+            self.history = self.history[-12:]
+
+        self.recommendations.sort(key=lambda r: r.priority, reverse=True)
+        return self.recommendations
+
+    async def _think_api(self, extra_context: str = "") -> list[ActionRecommendation]:
+        """Think using the Anthropic API backend (requires API credits)."""
         messages: list[dict[str, Any]] = []
 
         # Add recent history for continuity (last 3 cycles)
@@ -339,7 +408,6 @@ class TornAgentBrain:
         )
 
         while response.stop_reason == "tool_use":
-            # Process all tool calls in this response
             tool_results = []
             assistant_content = response.content
 
@@ -375,14 +443,11 @@ class TornAgentBrain:
         if final_text:
             logger.info("agent_summary", summary=final_text[:500])
 
-        # Save conversation to history
         self.history.append({"role": "user", "content": user_content})
         self.history.append({"role": "assistant", "content": final_text})
 
-        # Trim history to prevent unbounded growth
         if len(self.history) > 20:
             self.history = self.history[-12:]
 
-        # Sort recommendations by priority (highest first)
         self.recommendations.sort(key=lambda r: r.priority, reverse=True)
         return self.recommendations

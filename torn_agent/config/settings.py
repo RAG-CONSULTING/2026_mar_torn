@@ -18,8 +18,9 @@ class Settings(BaseSettings):
     torn_api_base_url: str = "https://api.torn.com/v2"
     torn_player_id: int = 4202918
 
-    # Anthropic / Claude
-    anthropic_api_key: str
+    # Claude backend: CLI mode uses your Max subscription (no API key needed)
+    use_claude_cli: bool = True  # True = use `claude` CLI, False = use Anthropic API
+    anthropic_api_key: str = ""  # Only needed if use_claude_cli=False
     claude_model: str = "claude-opus-4-6"
 
     # Agent behaviour
