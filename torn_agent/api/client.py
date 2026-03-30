@@ -56,6 +56,7 @@ class TornAPI:
     def __init__(self, api_key: str, base_url: str = "https://api.torn.com/v2"):
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
+        self._base_url_v1 = "https://api.torn.com"
         self._rate_limiter = RateLimiter()
         self._client = httpx.AsyncClient(
             timeout=30.0,
@@ -78,6 +79,21 @@ class TornAPI:
         await self._rate_limiter.acquire()
         url = f"{self._base_url}/{path.lstrip('/')}"
         logger.debug("torn_api_request", url=url, params=params)
+        resp = await self._client.get(url, params=params)
+        resp.raise_for_status()
+        data = resp.json()
+        if "error" in data:
+            logger.error("torn_api_error", error=data["error"], url=url)
+            raise TornAPIError(data["error"])
+        return data
+
+    async def _get_v1(self, section: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Make a rate-limited GET to the v1 API (some selections are v1-only)."""
+        await self._rate_limiter.acquire()
+        params = dict(params or {})
+        params["key"] = self._api_key
+        url = f"{self._base_url_v1}/{section}/"
+        logger.debug("torn_api_v1_request", url=url, params=params)
         resp = await self._client.get(url, params=params)
         resp.raise_for_status()
         data = resp.json()
