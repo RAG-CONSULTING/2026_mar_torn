@@ -13,6 +13,7 @@ from typing import Any
 import structlog
 
 from torn_agent.agent.brain import ActionRecommendation
+from torn_agent.agent.compliance import ComplianceGuard, ComplianceViolation
 from torn_agent.config.settings import Settings
 
 logger = structlog.get_logger()
@@ -58,6 +59,7 @@ class ActionExecutor:
     def __init__(self, settings: Settings):
         self.settings = settings
         self.action_log: list[ActionLog] = []
+        self._compliance = ComplianceGuard()
 
     def execute(self, recommendations: list[ActionRecommendation]) -> list[ActionLog]:
         """Process a batch of recommendations."""
@@ -81,6 +83,13 @@ class ActionExecutor:
 
     def _process_action(self, rec: ActionRecommendation) -> ActionLog:
         """Process a single action recommendation."""
+        # TORN rules compliance check (cannot be bypassed)
+        try:
+            self._compliance.validate_action(rec.action, rec.parameters)
+        except ComplianceViolation as e:
+            logger.warning("compliance_blocked", action=rec.action, violation=str(e))
+            return ActionLog(rec, False, f"Blocked by compliance: {e}")
+
         # Safety checks
         if not self._safety_check(rec):
             return ActionLog(rec, False, "Blocked by safety check")
